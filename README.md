@@ -4,9 +4,10 @@ Automatic tuning robot for deep learning
 - [ ] None
 
 ## TODOs
-- [ ] Auto kill process
-- [ ] Auto start process
+- [x] Auto kill process
+- [x] Auto start process
 - [ ] Auto read training results
-- [ ] GPU load reading
-- [ ] Auto assign GPUs
-- [ ] Auto tune hyperparameters
+- [x] GPU load reading
+- [x] Auto assign GPUs
+- [x] Auto tune hyperparameters
+
