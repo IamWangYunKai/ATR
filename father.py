@@ -53,7 +53,8 @@ if __name__ == '__main__':
                     'python child.py' + \
                     ' --policy '+policy + \
                     ' --seed '+ str(seed) + \
-                    ' --cuda '+ str(gpu_id)
+                    ' --cuda '+ str(gpu_id), 
+                    shell = True
                     )
             #print(p.pid)
             p.kill()
