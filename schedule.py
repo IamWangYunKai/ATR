@@ -1,9 +1,12 @@
 import pynvml
+import psutil
 import subprocess
 from random import randint
 from itertools import product
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
+
+G = 1024*1024*1024
 
 class Singleton(object):
     _instance = None
@@ -13,11 +16,18 @@ class Singleton(object):
             cls._instance = super(Singleton, cls).__new__(cls)  
         return cls._instance  
 
-class GPUManager(Singleton):
-    # Minimal free memory(MiB) for new process to run
-    def __init__(self, min_free_mem=0):
+class ResourceManager(Singleton):
+    # Minimal free memory(MiB) for new process to run and minimal cpu free percent
+    def __init__(self, mem_limit=0, cpu_limit = 0, gpu_limit=0):
+        self.mem_limit = mem_limit
+        self.cpu_limit = cpu_limit
+        self.gpu_limit = gpu_limit
+        
+        print('Find CPU count:',psutil.cpu_count())
+        info = psutil.virtual_memory()
+        print('Find total memory:', round(info.total/G), 'G')
+        
         pynvml.nvmlInit()
-        self.min_free_mem = min_free_mem
         self.gpu_num = pynvml.nvmlDeviceGetCount()
         self.handles = []
         for gpu_id in range(self.gpu_num):
@@ -28,7 +38,7 @@ class GPUManager(Singleton):
     def __del__(self):
         pynvml.nvmlShutdown()
         
-    def get_access(self):
+    def get_gpu_access(self):
         free_mems = []
         for handle in self.handles:
             info = pynvml.nvmlDeviceGetMemoryInfo(handle)
@@ -36,13 +46,36 @@ class GPUManager(Singleton):
             free_mems.append(info.free)
         max_free_mem = max(free_mems)
         gpu_id = free_mems.index(max_free_mem)
-        if max_free_mem/1024/1024 < self.min_free_mem:
+        if max_free_mem/G < self.gpu_limit:
             # no enough memory to use
             return -1
         else:
             # return gpu id with maximal memory
             return gpu_id
+        
+    def get_memory_access(self):
+        info = psutil.virtual_memory()
+        if info.available/G < self.mem_limit:
+            return False
+        return True
     
+    def get_cpu_access(self):
+        if 1. - psutil.cpu_percent(interval=0.5)/100. < self.cpu_limit:
+            return False
+        return True
+    
+    def report(self):
+        print('**************** REPORT ****************')
+        info = psutil.virtual_memory()
+        print('Memory usage :', round(info.used/G, 2), 'G /',
+              round(info.total/G, 2),'G')
+        print('CPU usage:',psutil.cpu_percent(interval=0.5), '%')
+        for i in range(len(self.handles)):
+            info = pynvml.nvmlDeviceGetMemoryInfo(self.handles[i])
+            print('GPU', i, 'usage:', round(info.used/G, 2), 'G /',
+                  round(info.total/G, 2),'G')
+        print('****************************************')
+        
 class ATR(Singleton):
     def __init__(self, script, hyper_params, max_num=None, random=True):
         self.script = script
@@ -52,7 +85,7 @@ class ATR(Singleton):
         self.random = random
         
         self.scheduler = BackgroundScheduler()
-        self.gpu_manager = GPUManager(600)
+        self.resource_manager = ResourceManager(mem_limit=1, cpu_limit = 0.1, gpu_limit=0.5)
         
         # start_date='2019-03-30 18:29:00', end_date='2019-03-30 18:30:00'
         self.scheduler.add_job(self.auto_tune, args=(666,), trigger='interval', seconds =1, id='auto_tune')
@@ -75,25 +108,39 @@ class ATR(Singleton):
     def start(self):
         self.scheduler.start()    
     
+    def report(self):
+        self.resource_manager.report()
+        
     def auto_tune(self, arg):
-        print('ask result', arg)
+        #print('ask result', arg)
         self.ask_result()
         self.auto_kill()
         self.auto_gen()
         
+    # for test
     def ask_result(self):
-        if len(self.working_ids) == 0: return
+        if len(self.working_pool) == 0: return
         pass
     
+    # for test
     def auto_kill(self):
-        if len(self.working_ids) == 0: return
-        pass
-    
+        if len(self.working_pool) == 0: 
+            if len(self.waiting_pool) == 0:
+                self.scheduler.shutdown(wait=False)
+            return
+        index = randint(0, len(self.working_pool)-1)
+        process = self.working_process.pop(index)
+        process.kill()
+        hyper_param = self.working_pool.pop(index)
+        self.finished_pool.append(hyper_param)
+        
     def auto_gen(self):
         while True:
             if len(self.waiting_pool) == 0: return
             if len(self.working_pool) == self.max_num: return
-            gpu_id = self.gpu_manager.get_access()
+            if not self.resource_manager.get_memory_access(): return
+            if not self.resource_manager.get_cpu_access(): return
+            gpu_id = self.resource_manager.get_gpu_access()
             if gpu_id < 0: return
             if(self.random):
                 index = randint(0, len(self.waiting_pool)-1)
@@ -110,11 +157,11 @@ class ATR(Singleton):
                 else:
                     cmd += ' --' + self.hp_name[i] + ' ' + str(hyper_param[i]) + ' '
             cmd += ' --cuda ' + str(gpu_id)
-            process = subprocess.Popen(cmd, stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+            process = subprocess.Popen(cmd, shell = True, stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
             #print(process.stdout.read())
             self.working_process.append(process)
             print(process.pid, cmd)
-            break
+            #process.kill()
             
     def listener(self, event):
         if event.exception: print('The job crashed :(')
@@ -123,7 +170,9 @@ if __name__ == '__main__':
     script = 'child.py'
     hyper_params = {
             'policy':['mlp', 'rnn', 'cnn'],
-            'seed':[1,2,3,4,5]
+            'seed':[1,2,3]
             }
-    atr = ATR(script, hyper_params, max_num=8)
-    atr.auto_gen()
+    atr = ATR(script, hyper_params, max_num=4)
+    atr.start()
+    #atr.auto_gen()
+    #atr.report()
