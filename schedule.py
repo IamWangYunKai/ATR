@@ -120,7 +120,11 @@ class ATR(Singleton):
     # for test
     def ask_result(self):
         if len(self.working_pool) == 0: return
-        pass
+        print('\n\n\n Ask:')
+        for p in self.working_process:
+            p.stdin.write(b'report\n')
+            print(p.stdout.readlines())
+            p.stdout.flush()
     
     # for test
     def auto_kill(self):
@@ -157,10 +161,10 @@ class ATR(Singleton):
                 else:
                     cmd += ' --' + self.hp_name[i] + ' ' + str(hyper_param[i]) + ' '
             cmd += ' --cuda ' + str(gpu_id)
-            process = subprocess.Popen(cmd, shell = True, stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+            process = subprocess.Popen(cmd, stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.PIPE, shell = True)
             #print(process.stdout.read())
             self.working_process.append(process)
-            print(process.pid, cmd)
+            #print(process.pid, cmd)
             #process.kill()
             
     def listener(self, event):

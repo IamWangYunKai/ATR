@@ -1,5 +1,6 @@
-import time
+import sys
 import argparse
+from time import sleep
  
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -8,7 +9,11 @@ if __name__ == '__main__':
     parser.add_argument("--cuda", default=0, type=int)
     args = parser.parse_args()
 
-    time.sleep(2)
     print('policy:', args.policy)
-    time.sleep(1)
     print('seed:', args.seed)
+
+    while(True):
+        print('policy:', args.policy)
+        line = sys.stdin.readlines()
+        sleep(0.001)
+        sys.stdout.write(line)

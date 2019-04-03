@@ -45,7 +45,7 @@ if __name__ == '__main__':
     gpu_id = gpu_manager.get_access()
 
     policys = ['mlp', 'rnn', 'cnn']
-    seeds = [1,2,3,4,5]
+    seeds = [1,2,3]
     
     for policy in policys:
         for seed in seeds:
@@ -53,10 +53,14 @@ if __name__ == '__main__':
                     'python child.py' + \
                     ' --policy '+policy + \
                     ' --seed '+ str(seed) + \
-                    ' --cuda '+ str(gpu_id), 
+                    ' --cuda '+ str(gpu_id),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     shell = True
                     )
-            #print(p.pid)
-            p.kill()
+            print(p.pid)
+            print(p.stdout.readlines())
+            #p.kill()
                 
     print('analyze finised!!!')
