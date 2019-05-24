@@ -1,85 +1,58 @@
-import pynvml
-import psutil
-import subprocess
+from singleton import Singleton
+from resource_manager import ResourceManager
 from random import randint
 from itertools import product
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 
-G = 1024*1024*1024
+from rllite import SAC
+from multiprocessing import Process, Value, Lock
 
-class Singleton(object):
-    _instance = None
+def run(lock, shared_eps_num, shared_eps_reward, hyper_param):    
+    model = SAC(
+    env_name = 'Pendulum-v0',
+    load_dir = './ckpt',
+    log_dir = "./log_"+str(hyper_param[0])+'_'+str(hyper_param[1]),
+    buffer_size = 1e6,
+    seed = hyper_param[1],
+    max_episode_steps = 500, # manual set
+    batch_size = hyper_param[0],
+    discount = 0.99,
+    learning_starts = 500,
+    tau = 0.005,
+    save_eps_num = 100
+	)
 
-    def __new__(cls, *args, **kw):
-        if not cls._instance:
-            cls._instance = super(Singleton, cls).__new__(cls)  
-        return cls._instance  
-
-class ResourceManager(Singleton):
-    # Minimal free memory(MiB) for new process to run and minimal cpu free percent
-    def __init__(self, mem_limit=0, cpu_limit = 0, gpu_limit=0, max_instances=9999):
-        self.mem_limit = mem_limit
-        self.cpu_limit = cpu_limit
-        self.gpu_limit = gpu_limit
-        self.max_instances = max_instances
-        
-        print('Find CPU count:',psutil.cpu_count())
-        info = psutil.virtual_memory()
-        print('Find total memory:', round(info.total/G), 'G')
-        
-        pynvml.nvmlInit()
-        self.gpu_num = pynvml.nvmlDeviceGetCount()
-        self.handles = []
-        for gpu_id in range(self.gpu_num):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
-            print("Find GPU", gpu_id, ":", pynvml.nvmlDeviceGetName(handle).decode('utf-8'))
-            self.handles.append(handle)
-        
-    def __del__(self):
-        pynvml.nvmlShutdown()
-        
-    def get_gpu_access(self):
-        free_mems = []
-        for handle in self.handles:
-            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            # info.total,info.free,info.used (B)
-            free_mems.append(info.free)
-        max_free_mem = max(free_mems)
-        gpu_id = free_mems.index(max_free_mem)
-        if max_free_mem/G < self.gpu_limit:
-            # no enough memory to use
-            return -1
-        else:
-            # return gpu id with maximal memory
-            return gpu_id
-        
-    def get_memory_access(self):
-        info = psutil.virtual_memory()
-        if info.available/G < self.mem_limit:
-            return False
-        return True
+    timesteps = 0
+    total_timesteps = 1e6
+    max_eps_steps = 100
     
-    def get_cpu_access(self):
-        if 1. - psutil.cpu_percent(interval=0.5)/100. < self.cpu_limit:
-            return False
-        return True
-    
-    def report(self):
-        print('**************** REPORT ****************')
-        info = psutil.virtual_memory()
-        print('Memory usage :', round(info.used/G, 2), 'G /',
-              round(info.total/G, 2),'G')
-        print('CPU usage:',psutil.cpu_percent(interval=0.5), '%')
-        for i in range(len(self.handles)):
-            info = pynvml.nvmlDeviceGetMemoryInfo(self.handles[i])
-            print('GPU', i, 'usage:', round(info.used/G, 2), 'G /',
-                  round(info.total/G, 2),'G')
-        print('****************************************')
+    # train
+    while timesteps < total_timesteps:
+        episode_reward = 0
+        done = False
+        eps_steps = 0
+        obs = model.env.reset()
+        while not done and eps_steps < max_eps_steps:
+            action = model.predict(obs)
+            new_obs, reward, done, info = model.env.step(action)
+            model.replay_buffer.push(obs, action, reward, new_obs, done)
+            obs = new_obs
+            episode_reward += reward
+            eps_steps += 1
+            timesteps += 1
+            if timesteps > model.learning_starts :
+                model.train_step()
+        model.episode_num += 1
+        model.writer.add_scalar('episode_reward', episode_reward, model.episode_num)
+        
+        lock.acquire()
+        shared_eps_num.value = model.episode_num
+        shared_eps_reward.value = episode_reward
+        lock.release()
         
 class ATR(Singleton):
-    def __init__(self, script, hyper_params, max_num=9999, random=True):
-        self.script = script
+    def __init__(self, hyper_params, max_num=9999, random=True):
         self.hp_name = list(hyper_params.keys())
         self.hp = self.get_hp(hyper_params)
         self.max_num = max_num
@@ -95,6 +68,10 @@ class ATR(Singleton):
         self.finished_pool = []
         self.working_pool = []
         self.working_process = []
+        
+        self.lock_list = []
+        self.shared_eps_num_list = []
+        self.shared_eps_reward_list = []
         
     def get_hp(self, hyper_params):
         hp_list = list(hyper_params.values())
@@ -113,20 +90,21 @@ class ATR(Singleton):
         self.resource_manager.report()
         
     def auto_tune(self, arg):
-#        print('ask result', arg)
         self.ask_result()
-        self.auto_kill()
+        #self.auto_kill()
         self.auto_gen()
         
     # for test
     def ask_result(self):
         if len(self.working_pool) == 0: return
-#        print('\n\n\n Ask:')
-        for p in self.working_process:
-            #p.stdin.write(b'report\n')
-            print('waiting ...')
-            print(p.stdout.readlines())
-            p.stdout.flush()
+        for i in range(len(self.working_pool)):
+            lock = self.lock_list[i]
+            lock.acquire()
+            shared_eps_num = self.shared_eps_num_list[i].value
+            shared_eps_reward = self.shared_eps_reward_list[i].value
+            lock.release()
+            #print(i, shared_eps_num, shared_eps_reward)
+            print(i, self.working_process[i].is_alive())
     
     # for test
     def auto_kill(self):
@@ -139,14 +117,18 @@ class ATR(Singleton):
         if len(self.working_pool) > 1:
             index = randint(0, len(self.working_pool)-1)
         process = self.working_process.pop(index)
-        process.kill()
+        process.terminate()
         hyper_param = self.working_pool.pop(index)
         self.finished_pool.append(hyper_param)
+        self.lock_list.pop(index)
+        self.shared_eps_num_list.pop(index)
+        self.shared_eps_reward_list.pop(index)
         
     def auto_gen(self):
         while True:
             if len(self.waiting_pool) == 0: return
-            if len(self.working_pool) >= self.max_num: return
+            # + 1 is a bug !
+            if len(self.working_pool) + 1 >= self.max_num: return
             if not self.resource_manager.get_memory_access(): return
             if not self.resource_manager.get_cpu_access(): return
             gpu_id = self.resource_manager.get_gpu_access()
@@ -160,30 +142,32 @@ class ATR(Singleton):
             else:
                 hyper_param = self.waiting_pool.pop(0)
                 self.working_pool.append(hyper_param)
-                
-            cmd = 'python ' + self.script
-            for i in range(len(self.hp_name)):
-                if isinstance(hyper_param[i], str):
-                    cmd += ' --' + self.hp_name[i] + ' ' + hyper_param[i] + ' '
-                else:
-                    cmd += ' --' + self.hp_name[i] + ' ' + str(hyper_param[i]) + ' '
-            cmd += ' --cuda ' + str(gpu_id)
-            process = subprocess.Popen(cmd, stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.PIPE, shell = True, bufsize=1024)
-            #print(process.stdout.read())
+
+            lock = Lock()
+            shared_eps_num = Value('l', 0)
+            shared_eps_reward = Value('d', 0.0)
+            
+            process = Process(target=run, args=(lock, shared_eps_num, shared_eps_reward, hyper_param))
+            print('000', process.is_alive())
+            process.start()
+            print('111', process.is_alive())
+            
+            self.lock_list.append(lock)
+            self.shared_eps_num_list.append(shared_eps_num)
+            self.shared_eps_reward_list.append(shared_eps_reward)
             self.working_process.append(process)
-            print(process.pid, cmd)
-            #process.kill()
+
+            print('Start:', hyper_param, ', working pool num:', len(self.working_process), len(self.working_pool))
             
     def listener(self, event):
         if event.exception: print('The job crashed :(')
 
 if __name__ == '__main__':
-    script = 'child.py'
     hyper_params = {
-            'policy':['mlp', 'rnn', 'cnn'],
+            'batch_size':[32, 64, 128],
             'seed':[1,2,3]
             }
-    atr = ATR(script, hyper_params, max_num=4)
+    atr = ATR(hyper_params, max_num=3)
     atr.start()
     #atr.auto_gen()
     #atr.report()

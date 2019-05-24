@@ -51,11 +51,20 @@ if __name__ == '__main__':
     lock = Lock()
     shared_eps_num = Value('l', 0)
     shared_eps_reward = Value('d', 0.0)
+    
+    lock2 = Lock()
+    shared_eps_num2 = Value('l', 0)
+    shared_eps_reward2 = Value('d', 0.0)
 
     p = Process(target=run, args=(lock, shared_eps_num, shared_eps_reward))
+    p2 = Process(target=run, args=(lock2, shared_eps_num2, shared_eps_reward2))
     p.start()
+    p2.start()
     while True:
         sleep(1.0)
         lock.acquire()
         print(shared_eps_num.value, shared_eps_reward.value)
         lock.release()
+        lock2.acquire()
+        print(shared_eps_num2.value, shared_eps_reward2.value)
+        lock2.release()
