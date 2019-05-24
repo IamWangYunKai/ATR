@@ -9,8 +9,8 @@ Automatic tuning robot for deep learning
 - [x] Memory usage reading
 - [x] Auto assign GPUs
 - [x] Auto tune hyperparameters
+- [x] Auto read training results
 
 ## TODOs
-
-- [ ] Auto read training results
+- [ ] Change subprocess to multiprocessing 
 
