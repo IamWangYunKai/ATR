@@ -2,29 +2,27 @@ from singleton import Singleton
 from resource_manager import ResourceManager
 from random import randint
 from itertools import product
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
-
+from time import sleep
 from rllite import SAC
 from multiprocessing import Process, Value, Lock
 
 def run(lock, shared_eps_num, shared_eps_reward, hyper_param):    
     model = SAC(
-    env_name = 'Pendulum-v0',
-    load_dir = './ckpt',
-    log_dir = "./log_"+str(hyper_param[0])+'_'+str(hyper_param[1]),
-    buffer_size = 1e6,
-    seed = hyper_param[1],
-    max_episode_steps = 500, # manual set
-    batch_size = hyper_param[0],
-    discount = 0.99,
-    learning_starts = 500,
-    tau = 0.005,
-    save_eps_num = 100
+        env_name = 'Pendulum-v0',
+        load_dir = './ckpt/ckpt_'+str(hyper_param[0])+'_'+str(hyper_param[1]),
+        log_dir = './log/log_'+str(hyper_param[0])+'_'+str(hyper_param[1]),
+        buffer_size = 1e6,
+        seed = hyper_param[1],
+        max_episode_steps = 500, # manual set
+        batch_size = hyper_param[0],
+        discount = 0.99,
+        learning_starts = 500,
+        tau = 0.005,
+        save_eps_num = 100
 	)
 
     timesteps = 0
-    total_timesteps = 1e6
+    total_timesteps = 1e5
     max_eps_steps = 100
     
     # train
@@ -57,13 +55,9 @@ class ATR(Singleton):
         self.hp = self.get_hp(hyper_params)
         self.max_num = max_num
         self.random = random
-        
-        self.scheduler = BackgroundScheduler()
+
         self.resource_manager = ResourceManager(mem_limit=1, cpu_limit = 0.1, gpu_limit=0.5, max_instances=self.max_num)
-        
-        # start_date='2019-03-30 18:29:00', end_date='2019-03-30 18:30:00'
-        self.scheduler.add_job(self.auto_tune, args=(666,), trigger='interval', seconds =1, id='auto_tune', max_instances=99999)
-        self.scheduler.add_listener(self.listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
+
         self.waiting_pool = [item for item in self.hp]
         self.finished_pool = []
         self.working_pool = []
@@ -84,14 +78,16 @@ class ATR(Singleton):
         return hp
         
     def start(self):
-        self.scheduler.start()    
+        while True:
+            self.auto_tune()
+            sleep(1.0)
     
     def report(self):
         self.resource_manager.report()
         
-    def auto_tune(self, arg):
-        self.ask_result()
-        #self.auto_kill()
+    def auto_tune(self):
+#        self.ask_result()
+        self.auto_kill()
         self.auto_gen()
         
     # for test
@@ -103,19 +99,29 @@ class ATR(Singleton):
             shared_eps_num = self.shared_eps_num_list[i].value
             shared_eps_reward = self.shared_eps_reward_list[i].value
             lock.release()
-            #print(i, shared_eps_num, shared_eps_reward)
-            print(i, self.working_process[i].is_alive())
+            print(i, shared_eps_num, shared_eps_reward)
     
     # for test
     def auto_kill(self):
         if len(self.working_pool) == 0: 
             if len(self.waiting_pool) == 0:
-                self.scheduler.shutdown(wait=False)
                 print('All Job Finished !')
             return
-        index = 0
-        if len(self.working_pool) > 1:
-            index = randint(0, len(self.working_pool)-1)
+
+        index = -999
+        max_eps_reward = -99999
+        for i in range(len(self.working_pool)):
+            lock = self.lock_list[i]
+            lock.acquire()
+            shared_eps_num = self.shared_eps_num_list[i].value
+            shared_eps_reward = self.shared_eps_reward_list[i].value
+            lock.release()
+            if shared_eps_num > 1000:
+                if shared_eps_reward > max_eps_reward:
+                    max_eps_reward = shared_eps_reward
+                    index = i
+        if index < 0:
+            return
         process = self.working_process.pop(index)
         process.terminate()
         hyper_param = self.working_pool.pop(index)
@@ -127,8 +133,7 @@ class ATR(Singleton):
     def auto_gen(self):
         while True:
             if len(self.waiting_pool) == 0: return
-            # + 1 is a bug !
-            if len(self.working_pool) + 1 >= self.max_num: return
+            if len(self.working_pool) >= self.max_num: return
             if not self.resource_manager.get_memory_access(): return
             if not self.resource_manager.get_cpu_access(): return
             gpu_id = self.resource_manager.get_gpu_access()
@@ -143,21 +148,22 @@ class ATR(Singleton):
                 hyper_param = self.waiting_pool.pop(0)
                 self.working_pool.append(hyper_param)
 
-            lock = Lock()
-            shared_eps_num = Value('l', 0)
-            shared_eps_reward = Value('d', 0.0)
+            self.create_process(hyper_param)
             
-            process = Process(target=run, args=(lock, shared_eps_num, shared_eps_reward, hyper_param))
-            print('000', process.is_alive())
-            process.start()
-            print('111', process.is_alive())
-            
-            self.lock_list.append(lock)
-            self.shared_eps_num_list.append(shared_eps_num)
-            self.shared_eps_reward_list.append(shared_eps_reward)
-            self.working_process.append(process)
+    def create_process(self, hyper_param):
+        lock = Lock()
+        shared_eps_num = Value('l', 0)
+        shared_eps_reward = Value('d', 0.0)
+        
+        process = Process(target=run, args=(lock, shared_eps_num, shared_eps_reward, hyper_param))
+        process.start()
+        
+        self.lock_list.append(lock)
+        self.shared_eps_num_list.append(shared_eps_num)
+        self.shared_eps_reward_list.append(shared_eps_reward)
+        self.working_process.append(process)
 
-            print('Start:', hyper_param, ', working pool num:', len(self.working_process), len(self.working_pool))
+        print('Start:', hyper_param)
             
     def listener(self, event):
         if event.exception: print('The job crashed :(')
@@ -167,7 +173,5 @@ if __name__ == '__main__':
             'batch_size':[32, 64, 128],
             'seed':[1,2,3]
             }
-    atr = ATR(hyper_params, max_num=3)
+    atr = ATR(hyper_params, max_num=4)
     atr.start()
-    #atr.auto_gen()
-    #atr.report()
