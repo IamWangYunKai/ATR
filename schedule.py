@@ -18,10 +18,11 @@ class Singleton(object):
 
 class ResourceManager(Singleton):
     # Minimal free memory(MiB) for new process to run and minimal cpu free percent
-    def __init__(self, mem_limit=0, cpu_limit = 0, gpu_limit=0):
+    def __init__(self, mem_limit=0, cpu_limit = 0, gpu_limit=0, max_instances=9999):
         self.mem_limit = mem_limit
         self.cpu_limit = cpu_limit
         self.gpu_limit = gpu_limit
+        self.max_instances = max_instances
         
         print('Find CPU count:',psutil.cpu_count())
         info = psutil.virtual_memory()
@@ -77,7 +78,7 @@ class ResourceManager(Singleton):
         print('****************************************')
         
 class ATR(Singleton):
-    def __init__(self, script, hyper_params, max_num=None, random=True):
+    def __init__(self, script, hyper_params, max_num=9999, random=True):
         self.script = script
         self.hp_name = list(hyper_params.keys())
         self.hp = self.get_hp(hyper_params)
@@ -85,10 +86,10 @@ class ATR(Singleton):
         self.random = random
         
         self.scheduler = BackgroundScheduler()
-        self.resource_manager = ResourceManager(mem_limit=1, cpu_limit = 0.1, gpu_limit=0.5)
+        self.resource_manager = ResourceManager(mem_limit=1, cpu_limit = 0.1, gpu_limit=0.5, max_instances=self.max_num)
         
         # start_date='2019-03-30 18:29:00', end_date='2019-03-30 18:30:00'
-        self.scheduler.add_job(self.auto_tune, args=(666,), trigger='interval', seconds =1, id='auto_tune')
+        self.scheduler.add_job(self.auto_tune, args=(666,), trigger='interval', seconds =1, id='auto_tune', max_instances=99999)
         self.scheduler.add_listener(self.listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
         self.waiting_pool = [item for item in self.hp]
         self.finished_pool = []
@@ -120,7 +121,7 @@ class ATR(Singleton):
     # for test
     def ask_result(self):
         if len(self.working_pool) == 0: return
-        print('\n\n\n Ask:')
+#        print('\n\n\n Ask:')
         for p in self.working_process:
             p.stdin.write(b'report\n')
             print(p.stdout.readlines())
@@ -131,6 +132,7 @@ class ATR(Singleton):
         if len(self.working_pool) == 0: 
             if len(self.waiting_pool) == 0:
                 self.scheduler.shutdown(wait=False)
+                print('All Job Finished !')
             return
         index = randint(0, len(self.working_pool)-1)
         process = self.working_process.pop(index)
@@ -141,7 +143,7 @@ class ATR(Singleton):
     def auto_gen(self):
         while True:
             if len(self.waiting_pool) == 0: return
-            if len(self.working_pool) == self.max_num: return
+            if len(self.working_pool) >= self.max_num: return
             if not self.resource_manager.get_memory_access(): return
             if not self.resource_manager.get_cpu_access(): return
             gpu_id = self.resource_manager.get_gpu_access()
@@ -164,7 +166,7 @@ class ATR(Singleton):
             process = subprocess.Popen(cmd, stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.PIPE, shell = True)
             #print(process.stdout.read())
             self.working_process.append(process)
-            #print(process.pid, cmd)
+            print(process.pid, cmd)
             #process.kill()
             
     def listener(self, event):
