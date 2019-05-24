@@ -14,6 +14,7 @@ if __name__ == '__main__':
 
     while(True):
         print('policy:', args.policy)
-        line = sys.stdin.readlines()
-        sleep(0.001)
+        #line = sys.stdin.readlines()
+        line = 'This is a test !\n'
+        sleep(0.1)
         sys.stdout.write(line)

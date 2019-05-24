@@ -113,7 +113,7 @@ class ATR(Singleton):
         self.resource_manager.report()
         
     def auto_tune(self, arg):
-        #print('ask result', arg)
+#        print('ask result', arg)
         self.ask_result()
         self.auto_kill()
         self.auto_gen()
@@ -123,7 +123,8 @@ class ATR(Singleton):
         if len(self.working_pool) == 0: return
 #        print('\n\n\n Ask:')
         for p in self.working_process:
-            p.stdin.write(b'report\n')
+            #p.stdin.write(b'report\n')
+            print('waiting ...')
             print(p.stdout.readlines())
             p.stdout.flush()
     
@@ -134,7 +135,9 @@ class ATR(Singleton):
                 self.scheduler.shutdown(wait=False)
                 print('All Job Finished !')
             return
-        index = randint(0, len(self.working_pool)-1)
+        index = 0
+        if len(self.working_pool) > 1:
+            index = randint(0, len(self.working_pool)-1)
         process = self.working_process.pop(index)
         process.kill()
         hyper_param = self.working_pool.pop(index)
@@ -149,7 +152,9 @@ class ATR(Singleton):
             gpu_id = self.resource_manager.get_gpu_access()
             if gpu_id < 0: return
             if(self.random):
-                index = randint(0, len(self.waiting_pool)-1)
+                index = 0
+                if len(self.waiting_pool) > 1:
+                    index = randint(0, len(self.waiting_pool)-1)
                 hyper_param = self.waiting_pool.pop(index)
                 self.working_pool.append(hyper_param)
             else:
@@ -163,7 +168,7 @@ class ATR(Singleton):
                 else:
                     cmd += ' --' + self.hp_name[i] + ' ' + str(hyper_param[i]) + ' '
             cmd += ' --cuda ' + str(gpu_id)
-            process = subprocess.Popen(cmd, stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.PIPE, shell = True)
+            process = subprocess.Popen(cmd, stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.PIPE, shell = True, bufsize=1024)
             #print(process.stdout.read())
             self.working_process.append(process)
             print(process.pid, cmd)
