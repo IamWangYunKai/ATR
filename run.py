@@ -4,7 +4,7 @@ from random import randint
 from itertools import product
 from time import sleep
 from rllite import SAC
-from multiprocessing import Process, Value, Lock
+import multiprocessing as mp
 
 def run(lock, shared_eps_num, shared_eps_reward, hyper_param):    
     model = SAC(
@@ -86,7 +86,7 @@ class ATR(Singleton):
         self.resource_manager.report()
         
     def auto_tune(self):
-#        self.ask_result()
+        self.ask_result()
         self.auto_kill()
         self.auto_gen()
         
@@ -109,7 +109,7 @@ class ATR(Singleton):
             return
 
         index = -999
-        max_eps_reward = -99999
+        min_eps_reward = -99999
         for i in range(len(self.working_pool)):
             lock = self.lock_list[i]
             lock.acquire()
@@ -117,8 +117,8 @@ class ATR(Singleton):
             shared_eps_reward = self.shared_eps_reward_list[i].value
             lock.release()
             if shared_eps_num > 1000:
-                if shared_eps_reward > max_eps_reward:
-                    max_eps_reward = shared_eps_reward
+                if shared_eps_reward < min_eps_reward:
+                    min_eps_reward = shared_eps_reward
                     index = i
         if index < 0:
             return
@@ -151,11 +151,12 @@ class ATR(Singleton):
             self.create_process(hyper_param)
             
     def create_process(self, hyper_param):
-        lock = Lock()
-        shared_eps_num = Value('l', 0)
-        shared_eps_reward = Value('d', 0.0)
+        ctx = mp.get_context('spawn')
+        lock = ctx.Lock()
+        shared_eps_num = ctx.Value('l', 0)
+        shared_eps_reward = ctx.Value('d', 0.0)
         
-        process = Process(target=run, args=(lock, shared_eps_num, shared_eps_reward, hyper_param))
+        process = ctx.Process(target=run, args=(lock, shared_eps_num, shared_eps_reward, hyper_param))
         process.start()
         
         self.lock_list.append(lock)
